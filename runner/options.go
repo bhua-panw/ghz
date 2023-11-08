@@ -49,6 +49,11 @@ type RunConfig struct {
 	enableCompression  bool
 	defaultCallOptions []grpc.CallOption
 
+	// fbs
+	serviceMethodName string
+	methodName        string
+	serviceName       string
+
 	// security settings
 	creds      credentials.TransportCredentials
 	cacert     string
@@ -110,10 +115,11 @@ type RunConfig struct {
 	metadata []byte
 	binary   bool
 
-	dataFunc         BinaryDataFunc
-	dataProviderFunc DataProviderFunc
-	dataStreamFunc   StreamMessageProviderFunc
-	mdProviderFunc   MetadataProviderFunc
+	dataFunc            BinaryDataFunc
+	dataProviderFunc    DataProviderFunc
+	fbsDataProviderFunc FbsDataProviderFunc
+	dataStreamFunc      StreamMessageProviderFunc
+	mdProviderFunc      MetadataProviderFunc
 
 	funcs template.FuncMap
 
@@ -135,6 +141,7 @@ type RunConfig struct {
 	skipFirst   int
 	countErrors bool
 	recvMsgFunc StreamRecvMsgInterceptFunc
+	recvFbsFunc StreamRecvFbsInterceptFunc
 }
 
 // Option controls some aspect of run
@@ -260,6 +267,12 @@ func NewConfig(call, host string, options ...Option) (*RunConfig, error) {
 	}
 
 	c.creds = creds
+
+	if c.serviceMethodName != "" {
+		tokens := strings.Split(c.serviceMethodName, "/")
+		c.methodName = tokens[2]
+		c.serviceName = tokens[1]
+	}
 
 	return c, nil
 }
@@ -855,6 +868,14 @@ func WithEnableCompression(enableCompression bool) Option {
 	}
 }
 
+func WithServiceMethodName(serviceMethodName string) Option {
+	return func(o *RunConfig) error {
+		o.serviceMethodName = serviceMethodName
+
+		return nil
+	}
+}
+
 // WithLoadSchedule specifies the load schedule
 //
 //	WithLoadSchedule("const")
@@ -1034,6 +1055,14 @@ func WithStreamRecvMsgIntercept(fn StreamRecvMsgInterceptFunc) Option {
 	}
 }
 
+func WithStreamRecvFbsIntercept(fn StreamRecvFbsInterceptFunc) Option {
+	return func(o *RunConfig) error {
+		o.recvFbsFunc = fn
+
+		return nil
+	}
+}
+
 // WithDataProvider provides custom data provider
 //
 //	WithDataProvider(func(*CallData) ([]*dynamic.Message, error) {
@@ -1047,6 +1076,14 @@ func WithStreamRecvMsgIntercept(fn StreamRecvMsgInterceptFunc) Option {
 func WithDataProvider(fn DataProviderFunc) Option {
 	return func(o *RunConfig) error {
 		o.dataProviderFunc = fn
+
+		return nil
+	}
+}
+
+func WithFbsDataProvider(fn FbsDataProviderFunc) Option {
+	return func(o *RunConfig) error {
+		o.fbsDataProviderFunc = fn
 
 		return nil
 	}

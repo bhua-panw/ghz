@@ -53,21 +53,22 @@ var tmplFuncMap = template.FuncMap{
 // newCallData returns new CallData
 func newCallData(
 	mtd *desc.MethodDescriptor,
-	workerID string, reqNum int64, withFuncs, withTemplateData bool, funcs template.FuncMap) *CallData {
+	workerID string, reqNum int64,
+	config *RunConfig) *CallData {
 
 	var t *template.Template
-	if withTemplateData {
+	if !config.disableTemplateData {
 		t = template.New("call_template_data")
 
-		if withFuncs {
+		if !config.disableTemplateFuncs {
 			t = t.
 				Funcs(tmplFuncMap).
 				Funcs(template.FuncMap(sprigFuncMap))
 
-			if len(funcs) > 0 {
-				fns := make(template.FuncMap, len(funcs))
+			if len(config.funcs) > 0 {
+				fns := make(template.FuncMap, len(config.funcs))
 
-				for k, v := range funcs {
+				for k, v := range config.funcs {
 					fns[k] = v
 				}
 
@@ -78,6 +79,26 @@ func newCallData(
 
 	now := time.Now()
 	newUUID, _ := uuid.NewRandom()
+
+	if config.serviceMethodName != "" {
+		return &CallData{
+			WorkerID:           workerID,
+			RequestNumber:      reqNum,
+			FullyQualifiedName: config.serviceMethodName,
+			MethodName:         config.methodName,
+			ServiceName:        config.serviceName,
+			InputName:          "",
+			OutputName:         "",
+			IsClientStreaming:  false,
+			IsServerStreaming:  false,
+			Timestamp:          now.Format(time.RFC3339),
+			TimestampUnix:      now.Unix(),
+			TimestampUnixMilli: now.UnixNano() / 1000000,
+			TimestampUnixNano:  now.UnixNano(),
+			UUID:               newUUID.String(),
+			t:                  t,
+		}
+	}
 
 	return &CallData{
 		WorkerID:           workerID,

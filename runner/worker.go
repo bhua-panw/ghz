@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	flatbuffers "github.com/google/flatbuffers/go"
 	"io"
 	"time"
 
@@ -27,6 +28,7 @@ type TickValue struct {
 
 // Worker is used for doing a single stream of requests in parallel
 type Worker struct {
+	conn *grpc.ClientConn
 	stub grpcdynamic.Stub
 	mtd  *desc.MethodDescriptor
 
@@ -37,10 +39,12 @@ type Worker struct {
 	ticks    <-chan TickValue
 
 	dataProvider     DataProviderFunc
+	fbsDataProvider  FbsDataProviderFunc
 	metadataProvider MetadataProviderFunc
 	msgProvider      StreamMessageProviderFunc
 
-	streamRecv StreamRecvMsgInterceptFunc
+	streamRecv    StreamRecvMsgInterceptFunc
+	streamFbsRecv StreamRecvFbsInterceptFunc
 }
 
 func (w *Worker) runWorker() error {
@@ -81,7 +85,7 @@ func (w *Worker) Stop() {
 func (w *Worker) makeRequest(tv TickValue) error {
 	reqNum := int64(tv.reqNumber)
 
-	ctd := newCallData(w.mtd, w.workerID, reqNum, !w.config.disableTemplateFuncs, !w.config.disableTemplateData, w.config.funcs)
+	ctd := newCallData(w.mtd, w.workerID, reqNum, w.config)
 
 	reqMD, err := w.metadataProvider(ctd)
 	if err != nil {
@@ -107,17 +111,27 @@ func (w *Worker) makeRequest(tv TickValue) error {
 		ctx = metadata.NewOutgoingContext(ctx, *reqMD)
 	}
 
-	inputs, err := w.dataProvider(ctd)
-	if err != nil {
-		return err
+	var inputs []*dynamic.Message
+	var fbsInput *flatbuffers.Builder
+
+	if w.fbsDataProvider != nil {
+		fbsInput, err = w.fbsDataProvider(ctd)
+		if err != nil {
+			return err
+		}
+	} else {
+		inputs, err = w.dataProvider(ctd)
+		if err != nil {
+			return err
+		}
 	}
 
 	var msgProvider StreamMessageProviderFunc
 	if w.msgProvider != nil {
 		msgProvider = w.msgProvider
-	} else if w.mtd.IsClientStreaming() {
+	} else if w.fbsDataProvider == nil && w.mtd.IsClientStreaming() {
 		if w.config.streamDynamicMessages {
-			mp, err := newDynamicMessageProvider(w.mtd, w.config.data, w.config.streamCallCount, !w.config.disableTemplateFuncs, !w.config.disableTemplateData)
+			mp, err := newDynamicMessageProvider(w.mtd, w.config)
 			if err != nil {
 				return err
 			}
@@ -133,35 +147,46 @@ func (w *Worker) makeRequest(tv TickValue) error {
 		}
 	}
 
-	if len(inputs) == 0 && msgProvider == nil {
+	if fbsInput == nil && len(inputs) == 0 && msgProvider == nil {
 		return fmt.Errorf("no data provided for request")
 	}
 
 	var callType string
 	if w.config.hasLog {
-		callType = "unary"
-		if w.mtd.IsClientStreaming() && w.mtd.IsServerStreaming() {
-			callType = "bidi"
-		} else if w.mtd.IsServerStreaming() {
-			callType = "server-streaming"
-		} else if w.mtd.IsClientStreaming() {
-			callType = "client-streaming"
-		}
 
-		w.config.log.Debugw("Making request", "workerID", w.workerID,
-			"call type", callType, "call", w.mtd.GetFullyQualifiedName(),
-			"input", inputs, "metadata", reqMD)
+		if w.fbsDataProvider == nil {
+			callType = "unary"
+			if w.mtd.IsClientStreaming() && w.mtd.IsServerStreaming() {
+				callType = "bidi"
+			} else if w.mtd.IsServerStreaming() {
+				callType = "server-streaming"
+			} else if w.mtd.IsClientStreaming() {
+				callType = "client-streaming"
+			}
+
+			w.config.log.Debugw("Making request", "workerID", w.workerID,
+				"call type", callType, "call", w.mtd.GetFullyQualifiedName(),
+				"input", inputs, "metadata", reqMD)
+		} else {
+			w.config.log.Debugw("Making request", "workerID", w.workerID,
+				"call type", "bidi", "call", w.config.serviceMethodName,
+				"input", inputs, "metadata", reqMD)
+		}
 	}
 
 	// RPC errors are handled via stats handler
-	if w.mtd.IsClientStreaming() && w.mtd.IsServerStreaming() {
-		_ = w.makeBidiRequest(&ctx, ctd, msgProvider)
-	} else if w.mtd.IsClientStreaming() {
-		_ = w.makeClientStreamingRequest(&ctx, ctd, msgProvider)
-	} else if w.mtd.IsServerStreaming() {
-		_ = w.makeServerStreamingRequest(&ctx, inputs[0])
+	if w.fbsDataProvider == nil {
+		if w.mtd.IsClientStreaming() && w.mtd.IsServerStreaming() {
+			_ = w.makeBidiRequest(&ctx, ctd, msgProvider, fbsInput)
+		} else if w.mtd.IsClientStreaming() {
+			_ = w.makeClientStreamingRequest(&ctx, ctd, msgProvider)
+		} else if w.mtd.IsServerStreaming() {
+			_ = w.makeServerStreamingRequest(&ctx, inputs[0])
+		} else {
+			_ = w.makeUnaryRequest(&ctx, reqMD, inputs[0])
+		}
 	} else {
-		_ = w.makeUnaryRequest(&ctx, reqMD, inputs[0])
+		_ = w.makeBidiRequest(&ctx, ctd, msgProvider, fbsInput)
 	}
 
 	return err
@@ -314,6 +339,15 @@ func (w *Worker) makeClientStreamingRequest(ctx *context.Context,
 	return nil
 }
 
+type FbsGeneric struct {
+	_tab flatbuffers.Table
+}
+
+func (rcv *FbsGeneric) Init(buf []byte, i flatbuffers.UOffsetT) {
+	rcv._tab.Bytes = buf
+	rcv._tab.Pos = i
+}
+
 func (w *Worker) makeServerStreamingRequest(ctx *context.Context, input *dynamic.Message) error {
 	var callOptions = []grpc.CallOption{}
 	if w.config.enableCompression {
@@ -415,15 +449,22 @@ func (w *Worker) makeServerStreamingRequest(ctx *context.Context, input *dynamic
 }
 
 func (w *Worker) makeBidiRequest(ctx *context.Context,
-	ctd *CallData, messageProvider StreamMessageProviderFunc) error {
+	ctd *CallData, messageProvider StreamMessageProviderFunc, fbsInput *flatbuffers.Builder) error {
 
 	var callOptions = []grpc.CallOption{}
 
 	if w.config.enableCompression {
 		callOptions = append(callOptions, grpc.UseCompressor(gzip.Name))
 	}
-	str, err := w.stub.InvokeRpcBidiStream(*ctx, w.mtd, callOptions...)
 
+	stream, err := w.conn.NewStream(*ctx,
+		&grpc.StreamDesc{
+			StreamName:    w.config.methodName,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+		w.config.serviceMethodName,
+		callOptions...)
 	if err != nil {
 		if w.config.hasLog {
 			w.config.log.Errorw("Invoke Bidi RPC call error: "+err.Error(),
@@ -440,7 +481,7 @@ func (w *Worker) makeBidiRequest(ctx *context.Context,
 	sendDone := make(chan bool)
 
 	closeStream := func() {
-		closeErr := str.CloseSend()
+		closeErr := stream.CloseSend()
 
 		if w.config.hasLog {
 			w.config.log.Debugw("Close send", "workerID", w.workerID, "call type", "bidi",
@@ -469,30 +510,35 @@ func (w *Worker) makeBidiRequest(ctx *context.Context,
 	var recvErr error
 
 	go func() {
-		interceptCanceled := false
+		//interceptCanceled := false
 
 		for recvErr == nil {
-			var res proto.Message
-			res, recvErr = str.RecvMsg()
+			//var res proto.Message
+			//res, recvErr = str.RecvMsg()
+			g := new(FbsGeneric)
+			recvErr = stream.RecvMsg(g)
 
 			if w.config.hasLog {
 				w.config.log.Debugw("Receive message", "workerID", w.workerID, "call type", "bidi",
 					"call", w.mtd.GetFullyQualifiedName(),
-					"response", res, "error", recvErr)
+					"response", "<FBS>", "error", recvErr)
 			}
 
-			if w.streamRecv != nil {
-				if converted, ok := res.(*dynamic.Message); ok {
-					iErr := w.streamRecv(converted, recvErr)
-					if errors.Is(iErr, ErrEndStream) && !interceptCanceled {
-						interceptCanceled = true
-						if len(cancel) == 0 {
-							cancel <- struct{}{}
+			err = w.streamFbsRecv(g._tab.Bytes, recvErr)
+			/*
+				if w.streamRecv != nil {
+					if converted, ok := res.(*dynamic.Message); ok {
+						iErr := w.streamRecv(converted, recvErr)
+						if errors.Is(iErr, ErrEndStream) && !interceptCanceled {
+							interceptCanceled = true
+							if len(cancel) == 0 {
+								cancel <- struct{}{}
+							}
+							recvErr = nil
 						}
-						recvErr = nil
 					}
 				}
-			}
+			*/
 
 			if recvErr != nil {
 				close(recvDone)
@@ -517,14 +563,14 @@ func (w *Worker) makeBidiRequest(ctx *context.Context,
 			// but we also need to keep our own counts
 			// in case of custom client providers
 
-			var payload *dynamic.Message
-			payload, err = messageProvider(ctd)
+			//var payload *dynamic.Message
+			//payload, err = messageProvider(ctd)
 
-			isLast := false
-			if errors.Is(err, ErrLastMessage) {
-				isLast = true
-				err = nil
-			}
+			//isLast := false
+			//if errors.Is(err, ErrLastMessage) {
+			//	isLast = true
+			//	err = nil
+			//}
 
 			if err != nil {
 				if errors.Is(err, ErrEndStream) {
@@ -535,7 +581,7 @@ func (w *Worker) makeBidiRequest(ctx *context.Context,
 				break
 			}
 
-			err = str.SendMsg(payload)
+			err = stream.SendMsg(fbsInput)
 			if err != nil {
 				if err == io.EOF {
 					err = nil
@@ -547,13 +593,13 @@ func (w *Worker) makeBidiRequest(ctx *context.Context,
 			if w.config.hasLog {
 				w.config.log.Debugw("Send message", "workerID", w.workerID, "call type", "bidi",
 					"call", w.mtd.GetFullyQualifiedName(),
-					"payload", payload, "error", err)
+					"payload", "<FBS>", "error", err)
 			}
 
-			if isLast {
-				closeStream()
-				break
-			}
+			//if isLast {
+			//	closeStream()
+			//	break
+			//}
 
 			counter++
 			indexCounter++

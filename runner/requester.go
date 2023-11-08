@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	flatbuffers "github.com/google/flatbuffers/go"
 	"math"
 	"strconv"
 	"sync"
@@ -53,6 +54,7 @@ type Requester struct {
 	start   time.Time
 
 	dataProvider     DataProviderFunc
+	fbsDataProvider  FbsDataProviderFunc
 	metadataProvider MetadataProviderFunc
 
 	lock       sync.Mutex
@@ -82,6 +84,8 @@ func NewRequester(c *RunConfig) (*Requester, error) {
 		mtd, err = protodesc.GetMethodDescFromProtoSet(c.call, c.protoset)
 	} else if c.protosetBinary != nil {
 		mtd, err = protodesc.GetMethodDescFromProtoSetBinary(c.call, c.protosetBinary)
+	} else if c.serviceMethodName != "" {
+		mtd = &desc.MethodDescriptor{}
 	} else {
 		// use reflection to get method descriptor
 		var cc *grpc.ClientConn
@@ -128,8 +132,10 @@ func NewRequester(c *RunConfig) (*Requester, error) {
 
 	if c.dataProviderFunc != nil {
 		reqr.dataProvider = c.dataProviderFunc
+	} else if c.fbsDataProviderFunc != nil {
+		reqr.fbsDataProvider = c.fbsDataProviderFunc
 	} else {
-		defaultDataProvider, err := newDataProvider(reqr.mtd, c.binary, c.dataFunc, c.data, !c.disableTemplateFuncs, !c.disableTemplateData, c.funcs)
+		defaultDataProvider, err := newDataProvider(reqr.mtd, c)
 		if err != nil {
 			return nil, err
 		}
@@ -139,7 +145,7 @@ func NewRequester(c *RunConfig) (*Requester, error) {
 	if c.mdProviderFunc != nil {
 		reqr.metadataProvider = c.mdProviderFunc
 	} else {
-		defaultMDProvider, err := newMetadataProvider(reqr.mtd, c.metadata, !c.disableTemplateFuncs, !c.disableTemplateData, c.funcs)
+		defaultMDProvider, err := newMetadataProvider(reqr.mtd, c)
 		if err != nil {
 			return nil, err
 		}
@@ -312,6 +318,8 @@ func (b *Requester) newClientConn(withStatsHandler bool) (*grpc.ClientConn, erro
 
 	}
 
+	opts = append(opts, grpc.WithCodec(flatbuffers.FlatbuffersCodec{}))
+
 	ctx := context.Background()
 	ctx, _ = context.WithTimeout(ctx, b.config.dialTimeout)
 	// cancel is ignored here as connection.Close() is used.
@@ -391,14 +399,17 @@ func (b *Requester) runWorkers(wt load.WorkerTicker, p load.Pacer) error {
 					w := Worker{
 						ticks:            ticks,
 						active:           true,
+						conn:             b.conns[n],
 						stub:             b.stubs[n],
 						mtd:              b.mtd,
 						config:           b.config,
 						stopCh:           make(chan bool),
 						workerID:         wID,
 						dataProvider:     b.dataProvider,
+						fbsDataProvider:  b.fbsDataProvider,
 						metadataProvider: b.metadataProvider,
 						streamRecv:       b.config.recvMsgFunc,
+						streamFbsRecv:    b.config.recvFbsFunc,
 						msgProvider:      b.config.dataStreamFunc,
 					}
 

@@ -4,16 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"strings"
-	"sync"
-	"text/template"
-
 	"github.com/golang/protobuf/jsonpb"
 	"github.com/golang/protobuf/proto"
+	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/jhump/protoreflect/desc"
 	"github.com/jhump/protoreflect/dynamic"
 	"google.golang.org/grpc/metadata"
+	"io"
+	"strings"
+	"sync"
 )
 
 // TODO move to own pacakge?
@@ -34,6 +33,9 @@ var ErrLastMessage = errors.New("last message")
 // For client and bidi streaming calls it should return an array of messages to be used
 type DataProviderFunc func(*CallData) ([]*dynamic.Message, error)
 
+// FbsDataProviderFunc
+type FbsDataProviderFunc func(*CallData) (*flatbuffers.Builder, error)
+
 // MetadataProviderFunc is the interface for providing metadadata for calls
 type MetadataProviderFunc func(*CallData) (*metadata.MD, error)
 
@@ -43,6 +45,9 @@ type StreamMessageProviderFunc func(*CallData) (*dynamic.Message, error)
 // StreamRecvMsgInterceptFunc is an interface for function invoked when we receive a stream message
 // Clients can return ErrEndStream to end the call early
 type StreamRecvMsgInterceptFunc func(*dynamic.Message, error) error
+
+// StreamRecvFbsInterceptFunc
+type StreamRecvFbsInterceptFunc func([]byte, error) error
 
 type dataProvider struct {
 	binary   bool
@@ -63,15 +68,13 @@ type mdProvider struct {
 	preseed  metadata.MD
 }
 
-func newDataProvider(mtd *desc.MethodDescriptor,
-	binary bool, dataFunc BinaryDataFunc, data []byte,
-	withFuncs, withTemplateData bool, funcs template.FuncMap) (*dataProvider, error) {
+func newDataProvider(mtd *desc.MethodDescriptor, config *RunConfig) (*dataProvider, error) {
 
 	dp := dataProvider{
-		binary:         binary,
-		dataFunc:       dataFunc,
+		binary:         config.binary,
+		dataFunc:       config.dataFunc,
 		mtd:            mtd,
-		data:           data,
+		data:           config.data,
 		cachedMessages: nil,
 	}
 
@@ -79,9 +82,9 @@ func newDataProvider(mtd *desc.MethodDescriptor,
 	var err error
 	dp.arrayJSONData = nil
 	if !dp.binary {
-		if strings.IndexRune(string(data), '[') == 0 { // it's an array
+		if strings.IndexRune(string(config.data), '[') == 0 { // it's an array
 			var dat []map[string]interface{}
-			if err := json.Unmarshal(data, &dat); err != nil {
+			if err := json.Unmarshal(config.data, &dat); err != nil {
 				return nil, err
 			}
 
@@ -99,9 +102,9 @@ func newDataProvider(mtd *desc.MethodDescriptor,
 
 	// Test if we can preseed data
 	ha := false
-	ctd := newCallData(mtd, "", 0, withFuncs, withTemplateData, funcs)
+	ctd := newCallData(mtd, "", 0, config)
 
-	if withTemplateData {
+	if !config.disableTemplateData {
 		if !dp.binary {
 			ha, err = ctd.hasAction(string(dp.data))
 			if err != nil {
@@ -224,17 +227,17 @@ func (dp *dataProvider) getMessages(ctd *CallData, i int, inputData []byte) ([]*
 	return inputs, nil
 }
 
-func newMetadataProvider(mtd *desc.MethodDescriptor, mdData []byte, withFuncs, withTemplateData bool, funcs template.FuncMap) (*mdProvider, error) {
+func newMetadataProvider(mtd *desc.MethodDescriptor, config *RunConfig) (*mdProvider, error) {
 	// Test if we can preseed data
-	ctd := newCallData(mtd, "", 0, withFuncs, withTemplateData, funcs)
-	ha, err := ctd.hasAction(string(mdData))
+	ctd := newCallData(mtd, "", 0, config)
+	ha, err := ctd.hasAction(string(config.metadata))
 	if err != nil {
 		return nil, err
 	}
 
 	var preseed metadata.MD = nil
 	if !ha {
-		mdMap, err := ctd.executeMetadata(string(mdData))
+		mdMap, err := ctd.executeMetadata(string(config.metadata))
 		if err != nil {
 			return nil, err
 		}
@@ -244,7 +247,7 @@ func newMetadataProvider(mtd *desc.MethodDescriptor, mdData []byte, withFuncs, w
 		}
 	}
 
-	return &mdProvider{metadata: mdData, preseed: preseed}, nil
+	return &mdProvider{metadata: config.metadata, preseed: preseed}, nil
 }
 
 func (dp *mdProvider) getMetadataForCall(ctd *CallData) (*metadata.MD, error) {
@@ -392,19 +395,19 @@ type dynamicMessageProvider struct {
 	indexCounter    uint
 }
 
-func newDynamicMessageProvider(mtd *desc.MethodDescriptor, data []byte, streamCallCount uint, withFuncs, withTemplateData bool) (*dynamicMessageProvider, error) {
+func newDynamicMessageProvider(mtd *desc.MethodDescriptor, config *RunConfig) (*dynamicMessageProvider, error) {
 	mp := dynamicMessageProvider{
 		mtd:             mtd,
-		data:            data,
+		data:            config.data,
 		arrayJSONData:   nil,
-		streamCallCount: streamCallCount,
+		streamCallCount: config.streamCallCount,
 	}
 
 	var err error
 
-	if strings.IndexRune(string(data), '[') == 0 { // it's an array
+	if strings.IndexRune(string(config.data), '[') == 0 { // it's an array
 		var dat []map[string]interface{}
-		if err := json.Unmarshal(data, &dat); err != nil {
+		if err := json.Unmarshal(config.data, &dat); err != nil {
 			return nil, err
 		}
 
@@ -423,9 +426,9 @@ func newDynamicMessageProvider(mtd *desc.MethodDescriptor, data []byte, streamCa
 
 	// Test if we have actions
 	ha := false
-	ctd := newCallData(mtd, "", 0, withFuncs, withTemplateData, nil)
+	ctd := newCallData(mtd, "", 0, config)
 
-	if withTemplateData {
+	if !config.disableTemplateData {
 		ha, err = ctd.hasAction(string(mp.data))
 		if err != nil {
 			return nil, err

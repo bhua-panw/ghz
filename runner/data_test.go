@@ -275,7 +275,10 @@ func TestMetadata_newMetadataProvider(t *testing.T) {
 			nil)
 		assert.NoError(t, err)
 
-		mdp, err := newMetadataProvider(mtdUnary, []byte(`{"token":"asdf"}`), true, true, nil)
+		config := &RunConfig{
+			metadata: []byte(`{"token":"asdf"}`),
+		}
+		mdp, err := newMetadataProvider(mtdUnary, config)
 		assert.NoError(t, err)
 		assert.NotNil(t, mdp)
 		assert.NotNil(t, mdp.preseed)
@@ -289,7 +292,10 @@ func TestMetadata_newMetadataProvider(t *testing.T) {
 			nil)
 		assert.NoError(t, err)
 
-		mdp, err := newMetadataProvider(mtdUnary, []byte(`{"token":"{{ .RequestNumber }}"}`), true, true, nil)
+		config := &RunConfig{
+			metadata: []byte(`{"token":"{{ .RequestNumber }}"}`),
+		}
+		mdp, err := newMetadataProvider(mtdUnary, config)
 		assert.NoError(t, err)
 		assert.NotNil(t, mdp)
 		assert.Nil(t, mdp.preseed)
@@ -304,11 +310,20 @@ func TestMetadata_getMetadataForCall(t *testing.T) {
 			nil)
 		assert.NoError(t, err)
 
-		mdp, err := newMetadataProvider(mtdUnary, []byte(`{"token":"asdf"}`), true, true, nil)
+		config := &RunConfig{
+			metadata:             []byte(`{"token":"asdf"}`),
+			disableTemplateData:  false,
+			disableTemplateFuncs: false,
+		}
+		mdp, err := newMetadataProvider(mtdUnary, config)
 		assert.NoError(t, err)
 		assert.NotNil(t, mdp.preseed)
 
-		cd := newCallData(mtdUnary, "123", 1, true, true, nil)
+		config = &RunConfig{
+			disableTemplateData:  false,
+			disableTemplateFuncs: false,
+		}
+		cd := newCallData(mtdUnary, "123", 1, config)
 
 		md, err := mdp.getMetadataForCall(cd)
 		assert.NoError(t, err)
@@ -324,11 +339,16 @@ func TestMetadata_getMetadataForCall(t *testing.T) {
 			nil)
 		assert.NoError(t, err)
 
-		mdp, err := newMetadataProvider(mtdUnary, []byte(`{"token":"{{ .RequestNumber }}"}`), true, true, nil)
+		config := &RunConfig{
+			metadata:             []byte(`{"token":"{{ .RequestNumber }}"}`),
+			disableTemplateData:  false,
+			disableTemplateFuncs: false,
+		}
+		mdp, err := newMetadataProvider(mtdUnary, config)
 		assert.NoError(t, err)
 		assert.Nil(t, mdp.preseed)
 
-		cd := newCallData(mtdUnary, "123", 1, true, true, nil)
+		cd := newCallData(mtdUnary, "123", 1, config)
 
 		md1, err := mdp.getMetadataForCall(cd)
 		assert.NoError(t, err)
@@ -336,7 +356,7 @@ func TestMetadata_getMetadataForCall(t *testing.T) {
 		assert.Equal(t, []string{"1"}, md1.Get("token"))
 		assert.NotSame(t, mdp.preseed, md1)
 
-		cd = newCallData(mtdUnary, "123", 2, true, true, nil)
+		cd = newCallData(mtdUnary, "123", 2, config)
 		md2, err := mdp.getMetadataForCall(cd)
 		assert.NoError(t, err)
 		assert.NotNil(t, md2)
@@ -353,17 +373,21 @@ func TestMetadata_getMetadataForCall(t *testing.T) {
 			nil)
 		assert.NoError(t, err)
 
-		funcs := template.FuncMap{
-			"customFunc": func() string {
-				return "custom-value"
+		config := &RunConfig{
+			metadata:             []byte(`{"token":"{{ customFunc }}"}`),
+			disableTemplateData:  false,
+			disableTemplateFuncs: false,
+			funcs: template.FuncMap{
+				"customFunc": func() string {
+					return "custom-value"
+				},
 			},
 		}
-
-		mdp, err := newMetadataProvider(mtdUnary, []byte(`{"token":"{{ customFunc }}"}`), true, true, funcs)
+		mdp, err := newMetadataProvider(mtdUnary, config)
 		assert.NoError(t, err)
 		assert.Nil(t, mdp.preseed)
 
-		cd := newCallData(mtdUnary, "123", 1, true, true, funcs)
+		cd := newCallData(mtdUnary, "123", 1, config)
 
 		md1, err := mdp.getMetadataForCall(cd)
 		assert.NoError(t, err)

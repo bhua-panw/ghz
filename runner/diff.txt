@@ -1,0 +1,494 @@
+--- data.go	2023-10-26 14:07:39
++++ /Users/bhua/cdss/github/ghz/runner/data.go	2023-11-07 14:13:36
+@@ -2,11 +2,10 @@
+ 
+ import (
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
+-	flatbuffers "github.com/google/flatbuffers/go"
+ 	"io"
+ 	"strings"
+ 	"sync"
+ 	"text/template"
+ 
+@@ -33,26 +32,20 @@
+ // DataProviderFunc is the interface for providing data for calls
+ // For unary and server streaming calls it should return an array with a single element
+ // For client and bidi streaming calls it should return an array of messages to be used
+ type DataProviderFunc func(*CallData) ([]*dynamic.Message, error)
+ 
+-// FbsDataProviderFunc
+-type FbsDataProviderFunc func(*CallData) (*flatbuffers.Builder, error)
+-
+ // MetadataProviderFunc is the interface for providing metadadata for calls
+ type MetadataProviderFunc func(*CallData) (*metadata.MD, error)
+ 
+ // StreamMessageProviderFunc is the interface for providing a message for every message send in the course of a streaming call
+ type StreamMessageProviderFunc func(*CallData) (*dynamic.Message, error)
+ 
+ // StreamRecvMsgInterceptFunc is an interface for function invoked when we receive a stream message
+ // Clients can return ErrEndStream to end the call early
+ type StreamRecvMsgInterceptFunc func(*dynamic.Message, error) error
+ 
+-// StreamRecvFbsInterceptFunc
+-type StreamRecvFbsInterceptFunc func([]byte, error) error
+-
+ type dataProvider struct {
+ 	binary   bool
+ 	data     []byte
+ 	mtd      *desc.MethodDescriptor
+ 	dataFunc BinaryDataFunc
+--- options.go	2023-10-26 13:57:27
++++ /Users/bhua/cdss/github/ghz/runner/options.go	2023-11-07 14:13:36
+@@ -108,15 +108,14 @@
+ 	// data & metadata
+ 	data     []byte
+ 	metadata []byte
+ 	binary   bool
+ 
+-	dataFunc            BinaryDataFunc
+-	dataProviderFunc    DataProviderFunc
+-	fbsDataProviderFunc FbsDataProviderFunc
+-	dataStreamFunc      StreamMessageProviderFunc
+-	mdProviderFunc      MetadataProviderFunc
++	dataFunc         BinaryDataFunc
++	dataProviderFunc DataProviderFunc
++	dataStreamFunc   StreamMessageProviderFunc
++	mdProviderFunc   MetadataProviderFunc
+ 
+ 	funcs template.FuncMap
+ 
+ 	// reflection metadata
+ 	rmd map[string]string
+@@ -134,11 +133,10 @@
+ 	cpus        int
+ 	tags        []byte
+ 	skipFirst   int
+ 	countErrors bool
+ 	recvMsgFunc StreamRecvMsgInterceptFunc
+-	recvFbsFunc StreamRecvFbsInterceptFunc
+ }
+ 
+ // Option controls some aspect of run
+ type Option func(*RunConfig) error
+ 
+@@ -1029,19 +1027,11 @@
+ //		return nil
+ //	})
+ func WithStreamRecvMsgIntercept(fn StreamRecvMsgInterceptFunc) Option {
+ 	return func(o *RunConfig) error {
+ 		o.recvMsgFunc = fn
+-
+-		return nil
+-	}
+-}
+ 
+-func WithStreamRecvFbsIntercept(fn StreamRecvFbsInterceptFunc) Option {
+-	return func(o *RunConfig) error {
+-		o.recvFbsFunc = fn
+-
+ 		return nil
+ 	}
+ }
+ 
+ // WithDataProvider provides custom data provider
+@@ -1060,18 +1050,10 @@
+ 
+ 		return nil
+ 	}
+ }
+ 
+-func WithFbsDataProvider(fn FbsDataProviderFunc) Option {
+-	return func(o *RunConfig) error {
+-		o.fbsDataProviderFunc = fn
+-
+-		return nil
+-	}
+-}
+-
+ // WithMetadataProvider provides custom metadata provider
+ //
+ //	WithMetadataProvider(ctd *CallData) (*metadata.MD, error) {
+ //		return &metadata.MD{"token": []string{"secret"}}, nil
+ //	}),
+--- requester.go	2023-10-26 13:56:59
++++ /Users/bhua/cdss/github/ghz/runner/requester.go	2023-11-07 14:13:36
+@@ -1,11 +1,10 @@
+ package runner
+ 
+ import (
+ 	"context"
+ 	"fmt"
+-	flatbuffers "github.com/google/flatbuffers/go"
+ 	"math"
+ 	"strconv"
+ 	"sync"
+ 	"time"
+ 
+@@ -21,12 +20,10 @@
+ 	"google.golang.org/grpc/connectivity"
+ 	"google.golang.org/grpc/credentials/insecure"
+ 	"google.golang.org/grpc/keepalive"
+ 	"google.golang.org/grpc/metadata"
+ 
+-	reflectpb "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
+-
+ 	// To register the xds resolvers and balancers.
+ 	_ "google.golang.org/grpc/xds"
+ )
+ 
+ // Max size of the buffer of result channel.
+@@ -54,11 +51,10 @@
+ 	results chan *callResult
+ 	stopCh  chan bool
+ 	start   time.Time
+ 
+ 	dataProvider     DataProviderFunc
+-	fbsDataProvider  FbsDataProviderFunc
+ 	metadataProvider MetadataProviderFunc
+ 
+ 	lock       sync.Mutex
+ 	stopReason StopReason
+ 	workers    []*Worker
+@@ -110,11 +106,11 @@
+ 			md = metadata.New(c.rmd)
+ 		}
+ 
+ 		refCtx := metadata.NewOutgoingContext(ctx, md)
+ 
+-		refClient := grpcreflect.NewClient(refCtx, reflectpb.NewServerReflectionClient(cc))
++		refClient := grpcreflect.NewClientAuto(refCtx, cc)
+ 
+ 		mtd, err = protodesc.GetMethodDescFromReflect(c.call, refClient)
+ 	}
+ 
+ 	if err != nil {
+@@ -130,12 +126,10 @@
+ 	// fill in the rest
+ 	reqr.mtd = mtd
+ 
+ 	if c.dataProviderFunc != nil {
+ 		reqr.dataProvider = c.dataProviderFunc
+-	} else if c.fbsDataProviderFunc != nil {
+-		reqr.fbsDataProvider = c.fbsDataProviderFunc
+ 	} else {
+ 		defaultDataProvider, err := newDataProvider(reqr.mtd, c.binary, c.dataFunc, c.data, !c.disableTemplateFuncs, !c.disableTemplateData, c.funcs)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -315,12 +309,10 @@
+ 				grpc.MaxCallRecvMsgSize(math.MaxInt32),
+ 				grpc.MaxCallSendMsgSize(math.MaxInt32),
+ 			))
+ 
+ 	}
+-
+-	opts = append(opts, grpc.WithCodec(flatbuffers.FlatbuffersCodec{}))
+ 
+ 	ctx := context.Background()
+ 	ctx, _ = context.WithTimeout(ctx, b.config.dialTimeout)
+ 	// cancel is ignored here as connection.Close() is used.
+ 	// See https://godoc.org/google.golang.org/grpc#DialContext
+@@ -397,21 +389,18 @@
+ 					}
+ 
+ 					w := Worker{
+ 						ticks:            ticks,
+ 						active:           true,
+-						conn:             b.conns[n],
+ 						stub:             b.stubs[n],
+ 						mtd:              b.mtd,
+ 						config:           b.config,
+ 						stopCh:           make(chan bool),
+ 						workerID:         wID,
+ 						dataProvider:     b.dataProvider,
+-						fbsDataProvider:  b.fbsDataProvider,
+ 						metadataProvider: b.metadataProvider,
+ 						streamRecv:       b.config.recvMsgFunc,
+-						streamFbsRecv:    b.config.recvFbsFunc,
+ 						msgProvider:      b.config.dataStreamFunc,
+ 					}
+ 
+ 					wc++ // increment worker id
+ 
+--- worker.go	2023-10-26 14:35:04
++++ /Users/bhua/cdss/github/ghz/runner/worker.go	2023-11-07 14:13:36
+@@ -3,11 +3,10 @@
+ import (
+ 	"context"
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
+-	flatbuffers "github.com/google/flatbuffers/go"
+ 	"io"
+ 	"time"
+ 
+ 	"github.com/gogo/protobuf/proto"
+ 	"github.com/jhump/protoreflect/desc"
+@@ -26,27 +25,24 @@
+ 	reqNumber uint64
+ }
+ 
+ // Worker is used for doing a single stream of requests in parallel
+ type Worker struct {
+-	conn *grpc.ClientConn
+ 	stub grpcdynamic.Stub
+ 	mtd  *desc.MethodDescriptor
+ 
+ 	config   *RunConfig
+ 	workerID string
+ 	active   bool
+ 	stopCh   chan bool
+ 	ticks    <-chan TickValue
+ 
+ 	dataProvider     DataProviderFunc
+-	fbsDataProvider  FbsDataProviderFunc
+ 	metadataProvider MetadataProviderFunc
+ 	msgProvider      StreamMessageProviderFunc
+ 
+-	streamRecv    StreamRecvMsgInterceptFunc
+-	streamFbsRecv StreamRecvFbsInterceptFunc
++	streamRecv StreamRecvMsgInterceptFunc
+ }
+ 
+ func (w *Worker) runWorker() error {
+ 	var err error
+ 	g := new(errgroup.Group)
+@@ -109,23 +105,13 @@
+ 	// include the metadata
+ 	if reqMD != nil {
+ 		ctx = metadata.NewOutgoingContext(ctx, *reqMD)
+ 	}
+ 
+-	var inputs []*dynamic.Message
+-	var fbsInput *flatbuffers.Builder
+-
+-	if w.fbsDataProvider != nil {
+-		fbsInput, err = w.fbsDataProvider(ctd)
+-		if err != nil {
+-			return err
+-		}
+-	} else {
+-		inputs, err = w.dataProvider(ctd)
+-		if err != nil {
+-			return err
+-		}
++	inputs, err := w.dataProvider(ctd)
++	if err != nil {
++		return err
+ 	}
+ 
+ 	var msgProvider StreamMessageProviderFunc
+ 	if w.msgProvider != nil {
+ 		msgProvider = w.msgProvider
+@@ -145,11 +131,11 @@
+ 
+ 			msgProvider = mp.GetStreamMessage
+ 		}
+ 	}
+ 
+-	if fbsInput == nil && len(inputs) == 0 && msgProvider == nil {
++	if len(inputs) == 0 && msgProvider == nil {
+ 		return fmt.Errorf("no data provided for request")
+ 	}
+ 
+ 	var callType string
+ 	if w.config.hasLog {
+@@ -167,11 +153,11 @@
+ 			"input", inputs, "metadata", reqMD)
+ 	}
+ 
+ 	// RPC errors are handled via stats handler
+ 	if w.mtd.IsClientStreaming() && w.mtd.IsServerStreaming() {
+-		_ = w.makeBidiRequest(&ctx, ctd, msgProvider, fbsInput)
++		_ = w.makeBidiRequest(&ctx, ctd, msgProvider)
+ 	} else if w.mtd.IsClientStreaming() {
+ 		_ = w.makeClientStreamingRequest(&ctx, ctd, msgProvider)
+ 	} else if w.mtd.IsServerStreaming() {
+ 		_ = w.makeServerStreamingRequest(&ctx, inputs[0])
+ 	} else {
+@@ -324,21 +310,12 @@
+ 
+ 	close(doneCh)
+ 	close(cancel)
+ 
+ 	return nil
+-}
+-
+-type FbsGeneric struct {
+-	_tab flatbuffers.Table
+ }
+ 
+-func (rcv *FbsGeneric) Init(buf []byte, i flatbuffers.UOffsetT) {
+-	rcv._tab.Bytes = buf
+-	rcv._tab.Pos = i
+-}
+-
+ func (w *Worker) makeServerStreamingRequest(ctx *context.Context, input *dynamic.Message) error {
+ 	var callOptions = []grpc.CallOption{}
+ 	if w.config.enableCompression {
+ 		callOptions = append(callOptions, grpc.UseCompressor(gzip.Name))
+ 	}
+@@ -436,30 +413,19 @@
+ 
+ 	return err
+ }
+ 
+ func (w *Worker) makeBidiRequest(ctx *context.Context,
+-	ctd *CallData, messageProvider StreamMessageProviderFunc, fbsInput *flatbuffers.Builder) error {
++	ctd *CallData, messageProvider StreamMessageProviderFunc) error {
+ 
+ 	var callOptions = []grpc.CallOption{}
+ 
+ 	if w.config.enableCompression {
+ 		callOptions = append(callOptions, grpc.UseCompressor(gzip.Name))
+ 	}
++	str, err := w.stub.InvokeRpcBidiStream(*ctx, w.mtd, callOptions...)
+ 
+-	sd := grpc.StreamDesc{
+-		StreamName:    "DnsResponseInspectionVerdictGet",
+-		ServerStreams: true,
+-		ClientStreams: true,
+-	}
+-
+-	//str, err := w.stub.InvokeRpcBidiStream(*ctx, w.mtd, callOptions...)
+-
+-	stream, err := w.conn.NewStream(*ctx,
+-		&sd,
+-		"/adns_fbs.QueryService/DnsResponseInspectionVerdictGet",
+-		callOptions...)
+ 	if err != nil {
+ 		if w.config.hasLog {
+ 			w.config.log.Errorw("Invoke Bidi RPC call error: "+err.Error(),
+ 				"workerID", w.workerID, "call type", "bidi",
+ 				"call", w.mtd.GetFullyQualifiedName(), "error", err)
+@@ -472,12 +438,11 @@
+ 	indexCounter := 0
+ 	recvDone := make(chan bool)
+ 	sendDone := make(chan bool)
+ 
+ 	closeStream := func() {
+-		//closeErr := str.CloseSend()
+-		closeErr := stream.CloseSend()
++		closeErr := str.CloseSend()
+ 
+ 		if w.config.hasLog {
+ 			w.config.log.Debugw("Close send", "workerID", w.workerID, "call type", "bidi",
+ 				"call", w.mtd.GetFullyQualifiedName(), "error", closeErr)
+ 		}
+@@ -502,39 +467,34 @@
+ 	}
+ 
+ 	var recvErr error
+ 
+ 	go func() {
+-		//interceptCanceled := false
++		interceptCanceled := false
+ 
+ 		for recvErr == nil {
+-			//var res proto.Message
+-			//res, recvErr = str.RecvMsg()
+-			g := new(FbsGeneric)
+-			recvErr = stream.RecvMsg(g)
++			var res proto.Message
++			res, recvErr = str.RecvMsg()
+ 
+ 			if w.config.hasLog {
+ 				w.config.log.Debugw("Receive message", "workerID", w.workerID, "call type", "bidi",
+ 					"call", w.mtd.GetFullyQualifiedName(),
+-					"response", "<FBS>", "error", recvErr)
++					"response", res, "error", recvErr)
+ 			}
+ 
+-			err = w.streamFbsRecv(g._tab.Bytes, recvErr)
+-			/*
+-				if w.streamRecv != nil {
+-					if converted, ok := res.(*dynamic.Message); ok {
+-						iErr := w.streamRecv(converted, recvErr)
+-						if errors.Is(iErr, ErrEndStream) && !interceptCanceled {
+-							interceptCanceled = true
+-							if len(cancel) == 0 {
+-								cancel <- struct{}{}
+-							}
+-							recvErr = nil
++			if w.streamRecv != nil {
++				if converted, ok := res.(*dynamic.Message); ok {
++					iErr := w.streamRecv(converted, recvErr)
++					if errors.Is(iErr, ErrEndStream) && !interceptCanceled {
++						interceptCanceled = true
++						if len(cancel) == 0 {
++							cancel <- struct{}{}
+ 						}
++						recvErr = nil
+ 					}
+ 				}
+-			*/
++			}
+ 
+ 			if recvErr != nil {
+ 				close(recvDone)
+ 				break
+ 			}
+@@ -555,30 +515,29 @@
+ 
+ 			// default message provider checks counter
+ 			// but we also need to keep our own counts
+ 			// in case of custom client providers
+ 
+-			//var payload *dynamic.Message
+-			//payload, err = messageProvider(ctd)
++			var payload *dynamic.Message
++			payload, err = messageProvider(ctd)
+ 
+-			//isLast := false
+-			//if errors.Is(err, ErrLastMessage) {
+-			//	isLast = true
+-			//	err = nil
+-			//}
++			isLast := false
++			if errors.Is(err, ErrLastMessage) {
++				isLast = true
++				err = nil
++			}
+ 
+ 			if err != nil {
+ 				if errors.Is(err, ErrEndStream) {
+ 					err = nil
+ 				}
+ 
+ 				closeStream()
+ 				break
+ 			}
+ 
+-			//err = str.SendMsg(payload)
+-			err = stream.SendMsg(fbsInput)
++			err = str.SendMsg(payload)
+ 			if err != nil {
+ 				if err == io.EOF {
+ 					err = nil
+ 				}
+ 
+@@ -586,17 +545,17 @@
+ 			}
+ 
+ 			if w.config.hasLog {
+ 				w.config.log.Debugw("Send message", "workerID", w.workerID, "call type", "bidi",
+ 					"call", w.mtd.GetFullyQualifiedName(),
+-					"payload", "<FBS>", "error", err)
++					"payload", payload, "error", err)
+ 			}
+ 
+-			//if isLast {
+-			//	closeStream()
+-			//	break
+-			//}
++			if isLast {
++				closeStream()
++				break
++			}
+ 
+ 			counter++
+ 			indexCounter++
+ 
+ 			if w.config.streamCallCount > 0 && counter >= w.config.streamCallCount {
