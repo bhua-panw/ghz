@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bojand/ghz/runner"
-	"github.com/bojand/ghz/web/database"
-	"github.com/bojand/ghz/web/model"
+	"github.com/bhua-panw/ghz/runner"
+	"github.com/bhua-panw/ghz/web/database"
+	"github.com/bhua-panw/ghz/web/model"
 	"github.com/labstack/echo"
 	"github.com/stretchr/testify/assert"
 )

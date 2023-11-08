@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bojand/ghz/web/api"
-	"github.com/bojand/ghz/web/config"
-	"github.com/bojand/ghz/web/database"
-	"github.com/bojand/ghz/web/router"
+	"github.com/bhua-panw/ghz/web/api"
+	"github.com/bhua-panw/ghz/web/config"
+	"github.com/bhua-panw/ghz/web/database"
+	"github.com/bhua-panw/ghz/web/router"
 )
 
 var (

@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bojand/ghz/runner"
+	"github.com/bhua-panw/ghz/runner"
 	promtypes "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 )

@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 
-	"github.com/bojand/ghz/runner"
-	"github.com/bojand/ghz/web/model"
+	"github.com/bhua-panw/ghz/runner"
+	"github.com/bhua-panw/ghz/web/model"
 	"github.com/labstack/echo"
 )
 
