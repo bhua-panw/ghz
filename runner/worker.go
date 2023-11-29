@@ -47,6 +47,14 @@ type Worker struct {
 	streamFbsRecv StreamRecvFbsInterceptFunc
 }
 
+func (w *Worker) getFullyQualifiedName() string {
+	if w.config.serviceMethodName != "" {
+		return w.config.serviceMethodName
+	} else {
+		return w.mtd.GetFullyQualifiedName()
+	}
+}
+
 func (w *Worker) runWorker() error {
 	var err error
 	g := new(errgroup.Group)
@@ -165,7 +173,7 @@ func (w *Worker) makeRequest(tv TickValue) error {
 			}
 
 			w.config.log.Debugw("Making request", "workerID", w.workerID,
-				"call type", callType, "call", w.mtd.GetFullyQualifiedName(),
+				"call type", callType, "call", w.getFullyQualifiedName(),
 				"input", inputs, "metadata", reqMD)
 		} else {
 			w.config.log.Debugw("Making request", "workerID", w.workerID,
@@ -207,7 +215,7 @@ func (w *Worker) makeUnaryRequest(ctx *context.Context, reqMD *metadata.MD, inpu
 		resData, _ := json.Marshal(res)
 
 		w.config.log.Debugw("Received response", "workerID", w.workerID, "call type", "unary",
-			"call", w.mtd.GetFullyQualifiedName(),
+			"call", w.getFullyQualifiedName(),
 			"input", string(inputData), "metadata", reqMD,
 			"response", string(resData), "error", resErr)
 	}
@@ -227,7 +235,7 @@ func (w *Worker) makeClientStreamingRequest(ctx *context.Context,
 		if w.config.hasLog {
 			w.config.log.Errorw("Invoke Client Streaming RPC call error: "+err.Error(), "workerID", w.workerID,
 				"call type", "client-streaming",
-				"call", w.mtd.GetFullyQualifiedName(), "error", err)
+				"call", w.getFullyQualifiedName(), "error", err)
 		}
 
 		return err
@@ -238,7 +246,7 @@ func (w *Worker) makeClientStreamingRequest(ctx *context.Context,
 
 		if w.config.hasLog {
 			w.config.log.Debugw("Close and receive", "workerID", w.workerID, "call type", "client-streaming",
-				"call", w.mtd.GetFullyQualifiedName(),
+				"call", w.getFullyQualifiedName(),
 				"response", res, "error", closeErr)
 		}
 	}
@@ -248,7 +256,7 @@ func (w *Worker) makeClientStreamingRequest(ctx *context.Context,
 
 		if w.config.hasLog {
 			w.config.log.Debugw("Send message", "workerID", w.workerID, "call type", "client-streaming",
-				"call", w.mtd.GetFullyQualifiedName(),
+				"call", w.getFullyQualifiedName(),
 				"payload", payload, "error", err)
 		}
 
@@ -363,7 +371,7 @@ func (w *Worker) makeServerStreamingRequest(ctx *context.Context, input *dynamic
 		if w.config.hasLog {
 			w.config.log.Errorw("Invoke Server Streaming RPC call error: "+err.Error(), "workerID", w.workerID,
 				"call type", "server-streaming",
-				"call", w.mtd.GetFullyQualifiedName(),
+				"call", w.getFullyQualifiedName(),
 				"input", input, "error", err)
 		}
 
@@ -403,7 +411,7 @@ func (w *Worker) makeServerStreamingRequest(ctx *context.Context, input *dynamic
 
 		if w.config.hasLog {
 			w.config.log.Debugw("Receive message", "workerID", w.workerID, "call type", "server-streaming",
-				"call", w.mtd.GetFullyQualifiedName(),
+				"call", w.getFullyQualifiedName(),
 				"response", res, "error", err)
 		}
 
@@ -469,7 +477,7 @@ func (w *Worker) makeBidiRequest(ctx *context.Context,
 		if w.config.hasLog {
 			w.config.log.Errorw("Invoke Bidi RPC call error: "+err.Error(),
 				"workerID", w.workerID, "call type", "bidi",
-				"call", w.mtd.GetFullyQualifiedName(), "error", err)
+				"call", w.getFullyQualifiedName(), "error", err)
 		}
 
 		return err
@@ -485,7 +493,7 @@ func (w *Worker) makeBidiRequest(ctx *context.Context,
 
 		if w.config.hasLog {
 			w.config.log.Debugw("Close send", "workerID", w.workerID, "call type", "bidi",
-				"call", w.mtd.GetFullyQualifiedName(), "error", closeErr)
+				"call", w.getFullyQualifiedName(), "error", closeErr)
 		}
 	}
 
@@ -520,7 +528,7 @@ func (w *Worker) makeBidiRequest(ctx *context.Context,
 
 			if w.config.hasLog {
 				w.config.log.Debugw("Receive message", "workerID", w.workerID, "call type", "bidi",
-					"call", w.mtd.GetFullyQualifiedName(),
+					"call", w.getFullyQualifiedName(),
 					"response", "<FBS>", "error", recvErr)
 			}
 
@@ -592,7 +600,7 @@ func (w *Worker) makeBidiRequest(ctx *context.Context,
 
 			if w.config.hasLog {
 				w.config.log.Debugw("Send message", "workerID", w.workerID, "call type", "bidi",
-					"call", w.mtd.GetFullyQualifiedName(),
+					"call", w.getFullyQualifiedName(),
 					"payload", "<FBS>", "error", err)
 			}
 
