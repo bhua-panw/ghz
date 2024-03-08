@@ -120,13 +120,14 @@ func (w *Worker) makeRequest(tv TickValue) error {
 	}
 
 	var inputs []*dynamic.Message
-	var fbsInput *flatbuffers.Builder
+	//var fbsInput *flatbuffers.Builder
 
 	if w.fbsDataProvider != nil {
+		/*
 		fbsInput, err = w.fbsDataProvider(ctd)
 		if err != nil {
 			return err
-		}
+		}*/
 	} else {
 		inputs, err = w.dataProvider(ctd)
 		if err != nil {
@@ -155,7 +156,7 @@ func (w *Worker) makeRequest(tv TickValue) error {
 		}
 	}
 
-	if fbsInput == nil && len(inputs) == 0 && msgProvider == nil {
+	if w.fbsDataProvider == nil && len(inputs) == 0 && msgProvider == nil {
 		return fmt.Errorf("no data provided for request")
 	}
 
@@ -185,7 +186,7 @@ func (w *Worker) makeRequest(tv TickValue) error {
 	// RPC errors are handled via stats handler
 	if w.fbsDataProvider == nil {
 		if w.mtd.IsClientStreaming() && w.mtd.IsServerStreaming() {
-			_ = w.makeBidiRequest(&ctx, ctd, msgProvider, fbsInput)
+			_ = w.makeBidiRequest(&ctx, ctd, msgProvider)
 		} else if w.mtd.IsClientStreaming() {
 			_ = w.makeClientStreamingRequest(&ctx, ctd, msgProvider)
 		} else if w.mtd.IsServerStreaming() {
@@ -194,7 +195,7 @@ func (w *Worker) makeRequest(tv TickValue) error {
 			_ = w.makeUnaryRequest(&ctx, reqMD, inputs[0])
 		}
 	} else {
-		_ = w.makeBidiRequest(&ctx, ctd, msgProvider, fbsInput)
+		_ = w.makeBidiRequest(&ctx, ctd, msgProvider)
 	}
 
 	return err
@@ -457,7 +458,7 @@ func (w *Worker) makeServerStreamingRequest(ctx *context.Context, input *dynamic
 }
 
 func (w *Worker) makeBidiRequest(ctx *context.Context,
-	ctd *CallData, messageProvider StreamMessageProviderFunc, fbsInput *flatbuffers.Builder) error {
+	ctd *CallData, messageProvider StreamMessageProviderFunc) error {
 
 	var callOptions = []grpc.CallOption{}
 
@@ -532,7 +533,8 @@ func (w *Worker) makeBidiRequest(ctx *context.Context,
 					"response", "<FBS>", "error", recvErr)
 			}
 
-			err = w.streamFbsRecv(g._tab.Bytes, recvErr)
+			// err = w.streamFbsRecv(g._tab.Bytes, recvErr)
+			go w.streamFbsRecv(g._tab.Bytes, recvErr) 
 			/*
 				if w.streamRecv != nil {
 					if converted, ok := res.(*dynamic.Message); ok {
@@ -556,6 +558,8 @@ func (w *Worker) makeBidiRequest(ctx *context.Context,
 	}()
 
 	go func() {
+		var err error
+		
 		done := false
 
 		for err == nil && !done {
@@ -589,6 +593,7 @@ func (w *Worker) makeBidiRequest(ctx *context.Context,
 				break
 			}
 
+			fbsInput, _ := w.fbsDataProvider(ctd)
 			err = stream.SendMsg(fbsInput)
 			if err != nil {
 				if err == io.EOF {

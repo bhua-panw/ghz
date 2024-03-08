@@ -354,6 +354,11 @@ func (b *Requester) newClientConn(withStatsHandler bool) (*grpc.ClientConn, erro
 		opts = append(opts, grpc.WithDefaultServiceConfig(grpcServiceConfig))
 	}
 
+	opts = append(opts,
+		grpc.WithInitialWindowSize(131072),
+		grpc.WithInitialConnWindowSize(131072),
+		grpc.WithReadBufferSize(65536),
+		grpc.WithWriteBufferSize(65536))
 	// create client connection
 	return grpc.DialContext(ctx, b.config.host, opts...)
 }
